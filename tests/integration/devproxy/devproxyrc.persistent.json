@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v4.0.0/rc.schema.json",
+  "plugins": [
+    {
+      "name": "RetryAfterPlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll"
+    },
+    {
+      "name": "GraphRandomErrorPlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
+      "configSection": "graphRandomErrorPlugin",
+      "urlsToWatch": [
+        "https://graph.microsoft.com/v1.0/$batch"
+      ]
+    },
+    {
+      "name": "GraphMockResponsePlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
+      "configSection": "graphMockResponsePlugin"
+    }
+  ],
+  "urlsToWatch": [
+    "https://graph.microsoft.com/v1.0/*",
+    "https://login.microsoftonline.com/*"
+  ],
+  "graphRandomErrorPlugin": {
+    "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v4.0.0/graphrandomerrorplugin.schema.json",
+    "allowedErrors": [
+      429
+    ],
+    "rate": 100,
+    "retryAfterInSeconds": 1
+  },
+  "graphMockResponsePlugin": {
+    "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v4.0.0/mockresponseplugin.schema.json",
+    "mocksFile": "mocks.json",
+    "blockUnmockedRequests": true
+  },
+  "asSystemProxy": false,
+  "port": 8000,
+  "logLevel": "information",
+  "showTimestamps": true,
+  "newVersionNotification": "none",
+  "validateSchemas": true
+}
