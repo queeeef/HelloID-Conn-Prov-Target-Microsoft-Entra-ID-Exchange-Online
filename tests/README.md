@@ -23,8 +23,8 @@ Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope Cu
 
    | Config | Scenario | Expected result |
    |---|---|---|
-   | `devproxyrc.transient.json` | 20% of `$batch` and pagination calls return 429/500/502/503/504 | The import returns complete data |
-   | `devproxyrc.persistent.json` | Every `$batch` call is throttled | The import fails instead of reporting groups without members |
+   | `devproxyrc.transient.json` | 20% of the pagination (`@odata.nextLink`) calls return 429/500/502/503/504, and retries sent before `Retry-After` are rejected | The import returns complete data |
+   | `devproxyrc.persistent.json` | In otherwise successful `$batch` calls, one group's members sub-request is always throttled (the 2.7.0 bug) | The import fails instead of leaving that group out |
 
    ```bash
    cd tests/integration/devproxy
@@ -39,7 +39,9 @@ Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope Cu
    ./tests/Invoke-Tests.ps1 -Suite integration
    ```
 
-The Graph responses come from `tests/integration/devproxy/mocks.json` (25 groups with 3 members each, spread over 2 pages). Requests without a mock are blocked, so nothing reaches the real Microsoft Graph.
+The Graph responses come from `tests/integration/devproxy/mocks.json` (25 groups with 3 members each, spread over 2 pages) and `mocks.persistent.json` (the same, plus the throttled group). Requests without a mock are blocked, so nothing reaches the real Microsoft Graph.
+
+Random errors are not injected into `$batch` calls, because Dev Proxy's `GraphMockResponsePlugin` (v4.0.0) overwrites an error response that another plugin already set for a batch request. Transient throttling of batch sub-requests is covered by the unit tests instead.
 
 ## CI
 

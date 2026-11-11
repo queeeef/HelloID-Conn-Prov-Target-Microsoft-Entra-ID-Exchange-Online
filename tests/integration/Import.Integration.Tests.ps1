@@ -5,14 +5,20 @@
 
     The import script runs unmodified, exactly as HelloID would run it. Only $actionContext is
     provided by this harness. All Graph and login.microsoftonline.com traffic goes through Dev Proxy
-    (HTTPS_PROXY), which answers from tests/integration/devproxy/mocks.json: 25 groups, each with
+    (HTTPS_PROXY), which answers from tests/integration/devproxy/mocks*.json: 25 groups, each with
     3 members spread over 2 pages.
 
     Scenarios (set DEVPROXY_SCENARIO to the one Dev Proxy was started with):
-      transient   20% of $batch and pagination calls fail with 429/5xx (devproxyrc.transient.json).
+      transient   20% of the @odata.nextLink pagination calls fail with 429/5xx and RetryAfterPlugin
+                  rejects retries that come before Retry-After (devproxyrc.transient.json).
                   The import must still return complete data.
-      persistent  every $batch call is throttled (devproxyrc.persistent.json).
-                  The import must fail loudly instead of reporting groups without members.
+      persistent  inside otherwise successful $batch calls, the members sub-request of one group is
+                  always throttled (mocks.persistent.json). This is exactly how the 2.7.0 bug showed up:
+                  the import must fail loudly instead of leaving that group out.
+
+    Note: random errors are not injected into $batch calls themselves, because Dev Proxy's
+    GraphMockResponsePlugin (v4.0.0) overwrites an error response that another plugin already set
+    for a batch request. Transient throttling of batch sub-requests is covered by the unit tests.
 #>
 
 BeforeDiscovery {
