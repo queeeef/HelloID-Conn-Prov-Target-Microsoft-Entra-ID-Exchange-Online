@@ -153,6 +153,108 @@ function Get-MSEntraCertificate {
     }
 }
 
+function Get-MSEntraRetryDelay {
+    <#
+        Returns the number of seconds to wait before retrying a request.
+        Honors the Retry-After value returned by Microsoft Graph (seconds, HTTP-date, TimeSpan or DateTimeOffset)
+        and falls back to exponential backoff (2, 4, 8, ... seconds, capped at MaxBackoffSeconds) when it is absent.
+        See: https://learn.microsoft.com/en-us/graph/throttling#best-practices-to-handle-throttling
+    #>
+    [CmdletBinding()]
+    param(
+        [object]
+        $RetryAfter,
+
+        [Parameter(Mandatory)]
+        [int]
+        $Attempt,
+
+        [int]
+        $MaxBackoffSeconds = 60
+    )
+    $seconds = $null
+    if ($RetryAfter -is [TimeSpan]) {
+        $seconds = $RetryAfter.TotalSeconds
+    }
+    elseif ($RetryAfter -is [DateTimeOffset]) {
+        $seconds = ($RetryAfter - [DateTimeOffset]::UtcNow).TotalSeconds
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace("$RetryAfter")) {
+        $parsedSeconds = 0
+        $parsedDate = [DateTimeOffset]::MinValue
+        if ([int]::TryParse("$RetryAfter", [ref]$parsedSeconds)) {
+            $seconds = $parsedSeconds
+        }
+        elseif ([DateTimeOffset]::TryParse("$RetryAfter", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsedDate)) {
+            $seconds = ($parsedDate - [DateTimeOffset]::UtcNow).TotalSeconds
+        }
+    }
+
+    if ($null -ne $seconds) {
+        Write-Output ([int][Math]::Max(1, [Math]::Ceiling($seconds)))
+    }
+    else {
+        Write-Output ([int][Math]::Min([Math]::Pow(2, $Attempt), $MaxBackoffSeconds))
+    }
+}
+
+function Invoke-MSEntraRestMethodWithRetry {
+    <#
+        Invokes Invoke-RestMethod with the given splat parameters and retries transient failures
+        (HTTP 429, 500, 502, 503 and 504), honoring the Retry-After header.
+        Any other error, or a transient error that persists after MaxRetries retries, is rethrown unchanged.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]
+        $SplatParams,
+
+        [int]
+        $MaxRetries = 5
+    )
+    $attempt = 0
+    while ($true) {
+        try {
+            $response = Invoke-RestMethod @SplatParams
+            return $response
+        }
+        catch {
+            $statusCode = 0
+            if ($null -ne $_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -notin @(429, 500, 502, 503, 504) -or $attempt -ge $MaxRetries) {
+                throw
+            }
+            $attempt++
+
+            # PowerShell 7 returns an HttpResponseMessage, Windows PowerShell 5.1 a HttpWebResponse
+            $retryAfter = $null
+            $responseHeaders = $_.Exception.Response.Headers
+            if ($null -ne $responseHeaders) {
+                if ($responseHeaders.GetType().FullName -eq 'System.Net.Http.Headers.HttpResponseHeaders') {
+                    if ($null -ne $responseHeaders.RetryAfter) {
+                        if ($null -ne $responseHeaders.RetryAfter.Delta) {
+                            $retryAfter = $responseHeaders.RetryAfter.Delta
+                        }
+                        else {
+                            $retryAfter = $responseHeaders.RetryAfter.Date
+                        }
+                    }
+                }
+                else {
+                    $retryAfter = $responseHeaders['Retry-After']
+                }
+            }
+
+            $delay = Get-MSEntraRetryDelay -RetryAfter $retryAfter -Attempt $attempt
+            Write-Warning "Request [$($SplatParams.Method) $($SplatParams.Uri)] returned HTTP $($statusCode). Retry [$attempt/$MaxRetries] in [$delay] seconds."
+            Start-Sleep -Seconds $delay
+        }
+    }
+}
+
 function Invoke-MSEntraBatchRequest {
     <#
         Executes a list of requests against the Microsoft Graph $batch endpoint
@@ -160,6 +262,12 @@ function Invoke-MSEntraBatchRequest {
         Each request is a hashtable with a 'Method' and a relative 'Uri' (e.g. '/groups/{id}/members').
         Returns a hashtable keyed by the (0-based) index of $Requests, where each value is the
         (paginated, fully resolved) 'value' array of that request's response.
+
+        Microsoft Graph evaluates throttling per sub-request: the $batch call itself returns HTTP 200
+        while individual sub-requests can return 429 or 5xx. Those sub-requests are retried
+        (only the failed ones, honoring their Retry-After header). If they keep failing after MaxRetries
+        retries an exception is thrown, so an import never continues with incomplete data.
+        Other non-success sub-responses keep the previous behavior: a warning and an empty result.
     #>
     [CmdletBinding()]
     param(
@@ -172,88 +280,110 @@ function Invoke-MSEntraBatchRequest {
         [hashtable]
         $Headers,
 
+        [ValidateRange(1, 20)]
         [int]
-        $BatchSize = 20
+        $BatchSize = 20,
+
+        [int]
+        $MaxRetries = 5
     )
     process {
         $resultsByIndex = @{}
+        $retryableStatusCodes = @(429, 500, 502, 503, 504)
 
         for ($i = 0; $i -lt $Requests.Count; $i += $BatchSize) {
-            $batchItems = @($Requests[$i..[Math]::Min($i + $BatchSize - 1, $Requests.Count - 1)])
-
-            $batchRequests = [System.Collections.Generic.List[object]]::new()
-            for ($j = 0; $j -lt $batchItems.Count; $j++) {
-                [void]$batchRequests.Add(
-                    @{
-                        id     = "$j"
-                        method = $batchItems[$j].Method
-                        url    = $batchItems[$j].Uri
-                    }
-                )
+            $pendingIndexes = [System.Collections.Generic.List[int]]::new()
+            for ($index = $i; $index -lt [Math]::Min($i + $BatchSize, $Requests.Count); $index++) {
+                $pendingIndexes.Add($index)
             }
 
-            $batchSplatParams = @{
-                Uri         = 'https://graph.microsoft.com/v1.0/$batch'
-                Headers     = $Headers
-                Method      = 'POST'
-                Body        = (@{ requests = $batchRequests } | ConvertTo-Json -Depth 10)
-                ContentType = 'application/json; charset=utf-8'
-                Verbose     = $false
-                ErrorAction = 'Stop'
-            }
-
-            $batchResponse = $null
-            $retryCount = 0
-            $maxRetries = 3
-            do {
-                try {
-                    $batchResponse = Invoke-RestMethod @batchSplatParams
-                    $retryCount = 0
+            $attempt = 0
+            while ($pendingIndexes.Count -gt 0) {
+                # The index in $Requests is used as the batch request id, so responses can be matched regardless of their order
+                $batchRequests = [System.Collections.Generic.List[object]]::new()
+                foreach ($index in $pendingIndexes) {
+                    [void]$batchRequests.Add(
+                        @{
+                            id     = "$index"
+                            method = $Requests[$index].Method
+                            url    = $Requests[$index].Uri
+                        }
+                    )
                 }
-                catch {
-                    if ($_.Exception.Response.StatusCode -eq 429 -or $_.Exception.Response.StatusCode -eq 504) {
-                        $retryCount++
-                        Write-Warning "Retry [$retryCount] for batch request covering requests [$i..$($i + $batchItems.Count - 1)]"
-                        Start-Sleep -Seconds ($retryCount * 5)
-                        continue
+
+                $batchSplatParams = @{
+                    Uri         = 'https://graph.microsoft.com/v1.0/$batch'
+                    Headers     = $Headers
+                    Method      = 'POST'
+                    Body        = (@{ requests = $batchRequests } | ConvertTo-Json -Depth 10)
+                    ContentType = 'application/json; charset=utf-8'
+                    Verbose     = $false
+                    ErrorAction = 'Stop'
+                }
+                $batchResponse = Invoke-MSEntraRestMethodWithRetry -SplatParams $batchSplatParams -MaxRetries $MaxRetries
+
+                $responsesById = @{}
+                foreach ($batchSubResponse in @($batchResponse.responses)) {
+                    $responsesById["$($batchSubResponse.id)"] = $batchSubResponse
+                }
+
+                $retryIndexes = [System.Collections.Generic.List[int]]::new()
+                $retryDelay = 0
+                $lastTransientError = $null
+                foreach ($index in $pendingIndexes) {
+                    $response = $responsesById["$index"]
+                    $requestDescription = "$($Requests[$index].Method) $($Requests[$index].Uri)"
+                    if ($null -eq $response) {
+                        throw "The batch response did not contain a response for request [$index] [$requestDescription]."
+                    }
+
+                    $status = [int]$response.status
+                    if ($status -ge 200 -and $status -lt 300) {
+                        $values = [System.Collections.ArrayList]@()
+                        if ($null -ne $response.body.value) {
+                            [void]$values.AddRange(@($response.body.value))
+                        }
+                        $nextLink = $response.body.'@odata.nextLink'
+                        while (-not [string]::IsNullOrEmpty($nextLink)) {
+                            $paginationSplatParams = @{
+                                Uri         = $nextLink
+                                Headers     = $Headers
+                                Method      = 'GET'
+                                ContentType = 'application/json; charset=utf-8'
+                                Verbose     = $false
+                                ErrorAction = 'Stop'
+                            }
+                            $paginationResponse = Invoke-MSEntraRestMethodWithRetry -SplatParams $paginationSplatParams -MaxRetries $MaxRetries
+                            if ($null -ne $paginationResponse.value) {
+                                [void]$values.AddRange(@($paginationResponse.value))
+                            }
+                            $nextLink = $paginationResponse.'@odata.nextLink'
+                        }
+                        $resultsByIndex[$index] = $values
+                    }
+                    elseif ($status -in $retryableStatusCodes) {
+                        [void]$retryIndexes.Add($index)
+                        $delay = Get-MSEntraRetryDelay -RetryAfter $response.headers.'Retry-After' -Attempt ($attempt + 1)
+                        if ($delay -gt $retryDelay) {
+                            $retryDelay = $delay
+                        }
+                        $lastTransientError = "HTTP $($status) for request [$index] [$requestDescription]: $($response.body.error.message)"
                     }
                     else {
-                        throw
+                        Write-Warning "Batch sub-request failed with HTTP $($status) for request at index [$index] [$requestDescription]: $($response.body.error.message)"
+                        $resultsByIndex[$index] = @()
                     }
                 }
-            } while ($retryCount -gt 0 -and $retryCount -le $maxRetries)
 
-            if ($retryCount -gt $maxRetries) {
-                throw "Rate limit exceeded for batch request covering requests [$i..$($i + $batchItems.Count - 1)]."
-            }
-
-            foreach ($response in $batchResponse.responses) {
-                $itemIndex = $i + [int]$response.id
-                if ($response.status -ge 200 -and $response.status -lt 300) {
-                    $values = [System.Collections.ArrayList]@()
-                    if ($null -ne $response.body.value) {
-                        [void]$values.AddRange(@($response.body.value))
+                if ($retryIndexes.Count -gt 0) {
+                    if ($attempt -ge $MaxRetries) {
+                        throw "[$($retryIndexes.Count)] batch sub-request(s) still failed after [$MaxRetries] retries, aborting to prevent incomplete data. Last error: $lastTransientError"
                     }
-                    $nextLink = $response.body.'@odata.nextLink'
-                    while (-not [string]::IsNullOrEmpty($nextLink)) {
-                        $paginationSplatParams = @{
-                            Uri         = $nextLink
-                            Headers     = $Headers
-                            Method      = 'GET'
-                            ContentType = 'application/json; charset=utf-8'
-                            Verbose     = $false
-                            ErrorAction = 'Stop'
-                        }
-                        $paginationResponse = Invoke-RestMethod @paginationSplatParams
-                        [void]$values.AddRange(@($paginationResponse.value))
-                        $nextLink = $paginationResponse.'@odata.nextLink'
-                    }
-                    $resultsByIndex[$itemIndex] = $values
+                    $attempt++
+                    Write-Warning "[$($retryIndexes.Count)] batch sub-request(s) were throttled or failed transiently. Retry [$attempt/$MaxRetries] in [$retryDelay] seconds. Last error: $lastTransientError"
+                    Start-Sleep -Seconds $retryDelay
                 }
-                else {
-                    Write-Warning "Batch sub-request failed for request at index [$itemIndex]: $($response.body.error.message)"
-                    $resultsByIndex[$itemIndex] = @()
-                }
+                $pendingIndexes = $retryIndexes
             }
         }
 

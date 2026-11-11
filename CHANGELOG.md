@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com), and this project adheres to [Semantic Versioning](https://semver.org).
 
+## [2.7.1] - 2026-11-11
+
+### Fixed
+- **Throttled batch sub-requests no longer return empty results.** Since 2.7.0, a sub-request in a `$batch` call that Microsoft Graph throttled (429) or failed transiently (5xx) was logged as a warning and returned as an empty result, so an import could report groups, teams or channels without members while the run succeeded. `Invoke-MSEntraBatchRequest` now retries only the failed sub-requests, waiting for the longest `Retry-After` they returned (exponential backoff when absent), up to 5 retries. If they keep failing, the import fails instead of returning incomplete data.
+  - The `$batch` call itself and the `@odata.nextLink` pagination calls are now retried on 429/500/502/503/504 with respect to `Retry-After` as well (new helpers `Invoke-MSEntraRestMethodWithRetry` and `Get-MSEntraRetryDelay`).
+  - Other non-success sub-responses (for example 404) keep the previous behavior: a warning and an empty result.
+  - Applies to all 10 scripts listed under 2.7.0.
+
 ## [2.7.0] - 2026-09-30
 
 ### Changed
