@@ -12,7 +12,6 @@
       "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
       "configSection": "graphRandomErrorPlugin",
       "urlsToWatch": [
-        "https://graph.microsoft.com/v1.0/$batch",
         "https://graph.microsoft.com/v1.0/groups/page2/*"
       ]
     },
