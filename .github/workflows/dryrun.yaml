@@ -1,0 +1,91 @@
+name: Dry run (100k mutations against a fake tenant)
+on:
+  push:
+    branches: ['dryrun/**']
+  workflow_dispatch:
+    inputs:
+      ops:
+        description: Number of mutations (spread over 4 shards)
+        default: '100000'
+
+permissions:
+  contents: read
+
+env:
+  OPS: ${{ inputs.ops || '2000' }}
+  DRYRUN_OPS: '200'
+  SHARDS: '4'
+  FAKER_VERSION: '40.54.0'
+
+jobs:
+  mutations:
+    name: Mutations shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      PARTS: '2'
+      IMPORT_INTERVAL: '20'
+      FAKE_RATE: '150'
+      FAKE_BURST: '300'
+      FAKE_RANDOM_429: '0.003'
+      FAKE_RANDOM_503: '0.002'
+      FAKE_INTRANET_RPS: '20'
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet "faker==${FAKER_VERSION}"
+      - name: Run shard
+        run: bash tests/dryrun/run_shard.sh ${{ matrix.shard }} "${RUNNER_TEMP}/dryrun-shard-${{ matrix.shard }}"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dryrun-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/dryrun-shard-${{ matrix.shard }}/out/
+
+  import-pressure:
+    name: Import under heavy throttling (2.7.0 vs fixed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FAKE_RATE: '40'
+      FAKE_BURST: '80'
+      FAKE_RANDOM_429: '0.01'
+      FAKE_RANDOM_503: '0.005'
+      FAKE_INTRANET_RPS: '20'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: pip install --quiet "faker==${FAKER_VERSION}"
+      - name: Run imports
+        run: bash tests/dryrun/run_import_pressure.sh "${RUNNER_TEMP}/dryrun-pressure" 3
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dryrun-import-pressure
+          path: ${{ runner.temp }}/dryrun-pressure/out/
+
+  report:
+    name: Combined report
+    needs: [mutations, import-pressure]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/artifacts
+      - name: Combine
+        run: |
+          python3 tests/dryrun/analyze.py "${RUNNER_TEMP}"/artifacts/dryrun-* | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dryrun-report
+          path: |
+            ${{ runner.temp }}/artifacts/summary.md
+            ${{ runner.temp }}/artifacts/summary.json
