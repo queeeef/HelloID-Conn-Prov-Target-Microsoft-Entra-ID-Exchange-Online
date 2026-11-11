@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v4.0.0/rc.schema.json",
+  "plugins": [
+    {
+      "name": "RetryAfterPlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll"
+    },
+    {
+      "name": "GraphMockResponsePlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
+      "configSection": "graphMockResponsePlugin"
+    }
+  ],
+  "urlsToWatch": [
+    "https://graph.microsoft.com/v1.0/*",
+    "https://login.microsoftonline.com/*"
+  ],
+  "graphMockResponsePlugin": {
+    "$schema": "https://raw.githubusercontent.com/dotnet/dev-proxy/main/schemas/v4.0.0/mockresponseplugin.schema.json",
+    "mocksFile": "mocks.persistent.json",
+    "blockUnmockedRequests": true
+  },
+  "asSystemProxy": false,
+  "port": 8000,
+  "logLevel": "information",
+  "showTimestamps": true,
+  "newVersionNotification": "none",
+  "validateSchemas": true
+}

@@ -1,0 +1,111 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PESTER_VERSION: 5.7.1
+  DEV_PROXY_VERSION: v4.0.0
+
+jobs:
+  unit:
+    name: Unit (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: PowerShell 7 on Linux
+            os: ubuntu-latest
+            shell: pwsh
+          - name: PowerShell 7 on Windows
+            os: windows-latest
+            shell: pwsh
+          - name: Windows PowerShell 5.1
+            os: windows-latest
+            shell: powershell
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run unit tests
+        run: ./tests/Invoke-Tests.ps1 -Suite unit
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-results-${{ matrix.os }}-${{ matrix.shell }}
+          path: tests/results/
+
+  integration:
+    name: Integration with Dev Proxy (${{ matrix.scenario }} errors)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [transient, persistent]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Install Dev Proxy ${{ env.DEV_PROXY_VERSION }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -sSfL -o setup.sh "https://raw.githubusercontent.com/dotnet/dev-proxy/${DEV_PROXY_VERSION}/scripts/setup.sh"
+          bash setup.sh "${DEV_PROXY_VERSION}" < /dev/null
+          echo "${RUNNER_TEMP}/devproxy" >> "$GITHUB_PATH"
+
+      - name: Start Dev Proxy
+        run: |
+          mkdir -p ~/.config/dev-proxy
+          cd tests/integration/devproxy
+          CI=true devproxy --config-file "devproxyrc.${{ matrix.scenario }}.json" > "${RUNNER_TEMP}/devproxy.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if grep -q "listening on 127.0.0.1:8000" "${RUNNER_TEMP}/devproxy.log"; then break; fi
+            if [ "$i" -eq 90 ]; then echo "Dev Proxy did not start"; cat "${RUNNER_TEMP}/devproxy.log"; exit 1; fi
+            sleep 1
+          done
+          # Trust the Dev Proxy root certificate so PowerShell accepts the intercepted HTTPS traffic
+          openssl pkcs12 -in ~/.config/dev-proxy/rootCert.pfx -clcerts -nokeys -out dev-proxy-ca.crt -passin pass:""
+          sudo cp dev-proxy-ca.crt /usr/local/share/ca-certificates/dev-proxy-ca.crt
+          sudo update-ca-certificates
+
+      - name: Run integration tests
+        shell: pwsh
+        env:
+          DEVPROXY_SCENARIO: ${{ matrix.scenario }}
+          HTTPS_PROXY: http://127.0.0.1:8000
+          HTTP_PROXY: http://127.0.0.1:8000
+        run: ./tests/Invoke-Tests.ps1 -Suite integration
+
+      - name: Stop Dev Proxy
+        if: always()
+        run: pkill -f devproxy || true
+
+      - name: Upload Dev Proxy log and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-${{ matrix.scenario }}
+          path: |
+            ${{ runner.temp }}/devproxy.log
+            tests/results/
