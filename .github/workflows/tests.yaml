@@ -80,7 +80,7 @@ jobs:
           cd tests/integration/devproxy
           CI=true devproxy --config-file "devproxyrc.${{ matrix.scenario }}.json" > "${RUNNER_TEMP}/devproxy.log" 2>&1 &
           for i in $(seq 1 90); do
-            if grep -q "Dev Proxy listening on" "${RUNNER_TEMP}/devproxy.log"; then break; fi
+            if grep -q "listening on 127.0.0.1:8000" "${RUNNER_TEMP}/devproxy.log"; then break; fi
             if [ "$i" -eq 90 ]; then echo "Dev Proxy did not start"; cat "${RUNNER_TEMP}/devproxy.log"; exit 1; fi
             sleep 1
           done

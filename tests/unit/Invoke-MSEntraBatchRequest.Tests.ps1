@@ -62,7 +62,7 @@ public class FakeWebException : System.Exception
     function New-FakeWebException {
         param([int] $StatusCode, [string] $RetryAfter)
         $response = [FakeHttpResponse]::new()
-        $response.StatusCode = [System.Net.HttpStatusCode]$StatusCode
+        $response.StatusCode = [Enum]::ToObject([System.Net.HttpStatusCode], $StatusCode)
         if ($RetryAfter) {
             $response.Headers.Add('Retry-After', $RetryAfter)
         }
@@ -72,7 +72,7 @@ public class FakeWebException : System.Exception
     function New-HttpResponseException {
         # The error PowerShell 7 throws for a non-success status code
         param([int] $StatusCode, [int] $RetryAfterSeconds)
-        $message = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$StatusCode)
+        $message = [System.Net.Http.HttpResponseMessage]::new([Enum]::ToObject([System.Net.HttpStatusCode], $StatusCode))
         if ($RetryAfterSeconds) {
             $message.Headers.RetryAfter = [System.Net.Http.Headers.RetryConditionHeaderValue]::new([TimeSpan]::FromSeconds($RetryAfterSeconds))
         }
@@ -206,7 +206,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'splits requests into batches of at most 20' {
-            $result = Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 45) -Headers $headers
+            $result = Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 45) -Headers $headers
 
             $batchSizes = @($script:FakeGraph.Calls | ForEach-Object { $_.Requests.Count })
             $batchSizes | Should -Be @(20, 20, 5)
@@ -216,7 +216,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         It 'maps every result to the index of its request, even when Graph returns responses out of order' {
             $script:FakeGraph.ReverseResponses = $true
 
-            $result = Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 25) -Headers $headers
+            $result = Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 25) -Headers $headers
 
             for ($n = 0; $n -lt 25; $n++) {
                 @($result[$n]).id | Should -Be (Get-ExpectedMemberId -Index $n)
@@ -224,7 +224,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'follows @odata.nextLink and concatenates all pages' {
-            $requests = New-TestRequest -Count 2
+            $requests = @(New-TestRequest -Count 2)
             $page2 = 'https://graph.microsoft.com/v1.0/groups/group-1/members?$skiptoken=page2'
             $script:FakeGraph.NextLinks[$requests[1].Uri] = $page2
             $script:FakeGraph.Pages[$page2] = [pscustomobject]@{ value = @([pscustomobject]@{ id = 'second-page-member' }) }
@@ -237,7 +237,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
 
     Context 'Throttled or transiently failing sub-requests' {
         It 'retries a throttled (429) sub-request and returns its data instead of an empty result' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[3].Uri -Status 429 -RetryAfter '7'
 
             $result = Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers
@@ -249,7 +249,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'only resends the sub-requests that failed' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[3].Uri -Status 429 -RetryAfter '7'
 
             $null = Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers
@@ -259,7 +259,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'waits for the Retry-After value of the throttled sub-request' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[3].Uri -Status 429 -RetryAfter '7'
 
             $null = Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers
@@ -268,7 +268,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'waits for the longest Retry-After when several sub-requests are throttled' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[1].Uri -Status 429 -RetryAfter '3'
             Set-FakeStatus -Key $requests[4].Uri -Status 429 -RetryAfter '11'
 
@@ -280,7 +280,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'retries a sub-request that returns HTTP <_> using exponential backoff when there is no Retry-After' -ForEach @(500, 502, 503, 504) {
-            $requests = New-TestRequest -Count 3
+            $requests = @(New-TestRequest -Count 3)
             Set-FakeStatus -Key $requests[0].Uri -Status $_, $_
 
             $result = Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers
@@ -291,14 +291,14 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'throws instead of returning incomplete data when a sub-request stays throttled' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[2].Uri -Status (@(429) * 50) -RetryAfter '1'
 
             { Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers } | Should -Throw
         }
 
         It 'gives up after the default of 5 retries' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[2].Uri -Status (@(429) * 50) -RetryAfter '1'
 
             { Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers } | Should -Throw
@@ -307,7 +307,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'respects -MaxRetries' {
-            $requests = New-TestRequest -Count 5
+            $requests = @(New-TestRequest -Count 5)
             Set-FakeStatus -Key $requests[2].Uri -Status (@(429) * 50) -RetryAfter '1'
 
             { Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers -MaxRetries 2 } | Should -Throw
@@ -316,7 +316,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'keeps processing later batches after a retry succeeds' {
-            $requests = New-TestRequest -Count 45
+            $requests = @(New-TestRequest -Count 45)
             Set-FakeStatus -Key $requests[0].Uri -Status 429 -RetryAfter '1'
             Set-FakeStatus -Key $requests[44].Uri -Status 503
 
@@ -332,7 +332,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         It 'retries the whole batch when the $batch call returns 429 and honors Retry-After (Windows PowerShell error shape)' {
             $script:FakeGraph.BatchFailures.Enqueue((New-FakeWebException -StatusCode 429 -RetryAfter '9'))
 
-            $result = Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 3) -Headers $headers
+            $result = Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 3) -Headers $headers
 
             $result.Count | Should -Be 3
             Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Seconds -eq 9 }
@@ -341,7 +341,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         It 'retries the whole batch when the $batch call returns 429 and honors Retry-After (PowerShell 7 error shape)' -Skip:($PSVersionTable.PSEdition -ne 'Core') {
             $script:FakeGraph.BatchFailures.Enqueue((New-HttpResponseException -StatusCode 429 -RetryAfterSeconds 13))
 
-            $result = Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 3) -Headers $headers
+            $result = Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 3) -Headers $headers
 
             $result.Count | Should -Be 3
             Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Seconds -eq 13 }
@@ -350,7 +350,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         It 'retries the whole batch when the $batch call returns 503' {
             $script:FakeGraph.BatchFailures.Enqueue((New-FakeWebException -StatusCode 503))
 
-            $result = Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 3) -Headers $headers
+            $result = Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 3) -Headers $headers
 
             $result.Count | Should -Be 3
         }
@@ -358,7 +358,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         It 'does not retry a non-transient error from the $batch call' {
             $script:FakeGraph.BatchFailures.Enqueue((New-FakeWebException -StatusCode 400))
 
-            { Invoke-MSEntraBatchRequest -Requests (New-TestRequest -Count 3) -Headers $headers } | Should -Throw
+            { Invoke-MSEntraBatchRequest -Requests @(New-TestRequest -Count 3) -Headers $headers } | Should -Throw
 
             $script:FakeGraph.Calls.Count | Should -Be 1
         }
@@ -366,7 +366,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
 
     Context 'Throttled pagination' {
         It 'retries a throttled @odata.nextLink call' {
-            $requests = New-TestRequest -Count 2
+            $requests = @(New-TestRequest -Count 2)
             $page2 = 'https://graph.microsoft.com/v1.0/groups/group-0/members?$skiptoken=page2'
             $script:FakeGraph.NextLinks[$requests[0].Uri] = $page2
             $script:FakeGraph.Pages[$page2] = [pscustomobject]@{ value = @([pscustomobject]@{ id = 'second-page-member' }) }
@@ -379,7 +379,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
         }
 
         It 'throws when a @odata.nextLink call stays throttled' {
-            $requests = New-TestRequest -Count 1
+            $requests = @(New-TestRequest -Count 1)
             $page2 = 'https://graph.microsoft.com/v1.0/groups/group-0/members?$skiptoken=page2'
             $script:FakeGraph.NextLinks[$requests[0].Uri] = $page2
             $script:FakeGraph.Pages[$page2] = [pscustomobject]@{ value = @() }
@@ -391,7 +391,7 @@ Describe 'Invoke-MSEntraBatchRequest in <Name>' -ForEach $connectorScripts {
 
     Context 'Non-transient sub-request errors' {
         It 'keeps the existing behavior for HTTP 404: a warning, an empty result and no retry' {
-            $requests = New-TestRequest -Count 3
+            $requests = @(New-TestRequest -Count 3)
             Set-FakeStatus -Key $requests[1].Uri -Status 404
 
             $result = Invoke-MSEntraBatchRequest -Requests $requests -Headers $headers
