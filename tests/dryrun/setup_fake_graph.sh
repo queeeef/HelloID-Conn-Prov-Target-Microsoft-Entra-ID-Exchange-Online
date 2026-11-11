@@ -15,7 +15,9 @@ sudo cp "$work/certs/ca.crt" /usr/local/share/ca-certificates/helloid-dryrun-ca.
 sudo update-ca-certificates > /dev/null
 grep -q "graph.microsoft.com" /etc/hosts || echo "127.0.0.1 graph.microsoft.com login.microsoftonline.com" | sudo tee -a /etc/hosts > /dev/null
 
-sudo -E env "PATH=$PATH" FAKE_PORT=443 python3 "$here/fake_graph.py" "$work/data/tenant.json" "$work/certs/server.crt" "$work/certs/server.key" > "$work/fake-graph.log" 2>&1 &
+sudo env FAKE_PORT=443 FAKE_RATE="${FAKE_RATE:-250}" FAKE_BURST="${FAKE_BURST:-500}" FAKE_RANDOM_429="${FAKE_RANDOM_429:-0.003}" \
+  FAKE_RANDOM_503="${FAKE_RANDOM_503:-0.002}" FAKE_INTRANET_RPS="${FAKE_INTRANET_RPS:-20}" FAKE_NONMEMBER_MESSAGE_ID="${FAKE_NONMEMBER_MESSAGE_ID:-member}" \
+  python3 "$here/fake_graph.py" "$work/data/tenant.json" "$work/certs/server.crt" "$work/certs/server.key" > "$work/fake-graph.log" 2>&1 &
 for i in $(seq 1 30); do
   if grep -q "listening" "$work/fake-graph.log" 2>/dev/null; then break; fi
   sleep 1

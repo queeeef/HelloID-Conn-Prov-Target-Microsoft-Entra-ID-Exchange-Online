@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 env:
-  OPS: ${{ inputs.ops || '2000' }}
-  DRYRUN_OPS: '200'
+  OPS: ${{ inputs.ops || '100000' }}
+  DRYRUN_OPS: '5000'
   SHARDS: '4'
   FAKER_VERSION: '40.54.0'
 
@@ -28,7 +28,7 @@ jobs:
         shard: [0, 1, 2, 3]
     env:
       PARTS: '2'
-      IMPORT_INTERVAL: '20'
+      IMPORT_INTERVAL: '90'
       FAKE_RATE: '150'
       FAKE_BURST: '300'
       FAKE_RANDOM_429: '0.003'
@@ -62,7 +62,7 @@ jobs:
           fetch-depth: 0
       - run: pip install --quiet "faker==${FAKER_VERSION}"
       - name: Run imports
-        run: bash tests/dryrun/run_import_pressure.sh "${RUNNER_TEMP}/dryrun-pressure" 3
+        run: bash tests/dryrun/run_import_pressure.sh "${RUNNER_TEMP}/dryrun-pressure" 5
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
